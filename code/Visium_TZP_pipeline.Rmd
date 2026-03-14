@@ -1,0 +1,291 @@
+---
+title: "Visium V1 Spatial Transcriptomics: CD_PBS vs HFD_PBS vs HFD_TZP"
+author: "Tao Sun"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+  word_document:
+    toc: true
+    toc_depth: 3
+params:
+  base_dir: "G:/changting_xiao_university_of_saskatoon"
+  spaceranger_dir: "!r file.path(params$base_dir, 'SpaceRanger')"
+  results_dir: "!r file.path(params$base_dir, 'results')"
+  plots_dir: "!r file.path(params$base_dir, 'plots')"
+  conditions: ["CD_PBS", "HFD_PBS", "HFD_TZP"]
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE)
+```
+
+# 1. Environment
+
+## 1.1 Packages
+
+```{r packages}
+pkgs <- c(
+  "Seurat", "SeuratObject", "hdf5r", "dplyr", "ggplot2", "patchwork",
+  "future", "Matrix", "data.table", "stringr", "clusterProfiler",
+  "org.Rn.eg.db", "enrichplot"
+)
+to_install <- pkgs[!pkgs %in% rownames(installed.packages())]
+if (length(to_install) > 0) {
+  suppressMessages({
+    if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+    bioc <- intersect(to_install, c("org.Rn.eg.db"))
+    cran  <- setdiff(to_install, bioc)
+    if (length(cran) > 0) install.packages(cran)
+    if (length(bioc) > 0) BiocManager::install(bioc)
+  })
+}
+lapply(pkgs, library, character.only = TRUE)
+```
+
+## 1.2 Paths
+
+```{r paths}
+base_dir       <- params$base_dir
+spaceranger_dir<- params$spaceranger_dir
+results_dir    <- params$results_dir
+plots_dir      <- params$plots_dir
+conditions     <- params$conditions
+
+dirs <- c(results_dir, plots_dir)
+invisible(lapply(dirs, function(p) if (!dir.exists(p)) dir.create(p, recursive = TRUE)))
+
+print(list(
+  base_dir = base_dir,
+  spaceranger_dir = spaceranger_dir,
+  results_dir = results_dir,
+  plots_dir = plots_dir
+))
+```
+
+# 2. Load SpaceRanger matrices (per condition)
+
+```{r load_h5}
+read_visium_h5 <- function(cond) {
+  h5 <- file.path(spaceranger_dir, cond, "filtered_feature_bc_matrix.h5")
+  stopifnot(file.exists(h5))
+  obj <- Load10X_Spatial(
+    data.dir = file.path(spaceranger_dir, cond),
+    filename = "filtered_feature_bc_matrix.h5"
+  )
+  obj$condition <- cond
+  return(obj)
+}
+
+cd_pbs  <- read_visium_h5("CD_PBS")
+hfd_pbs <- read_visium_h5("HFD_PBS")
+hfd_tzp <- read_visium_h5("HFD_TZP")
+
+cd_pbs; hfd_pbs; hfd_tzp
+```
+
+# 3. QC metrics
+
+```{r qc}
+for (obj in list(cd_pbs, hfd_pbs, hfd_tzp)) {
+  obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^mt-")
+}
+p1 <- VlnPlot(cd_pbs,  features = c("nFeature_Spatial","nCount_Spatial","percent.mt"), ncol=3) + ggtitle("CD_PBS")
+p2 <- VlnPlot(hfd_pbs, features = c("nFeature_Spatial","nCount_Spatial","percent.mt"), ncol=3) + ggtitle("HFD_PBS")
+p3 <- VlnPlot(hfd_tzp, features = c("nFeature_Spatial","nCount_Spatial","percent.mt"), ncol=3) + ggtitle("HFD_TZP")
+p_all <- p1 / p2 / p3
+ggsave(file.path(plots_dir, "QC_VlnPlots.png"), p_all, width = 12, height = 10, dpi = 300)
+p_all
+```
+
+## 3.1 Filter spots
+
+```{r filter}
+cd_pbs   <- subset(cd_pbs,  subset = nFeature_Spatial > 200 & nFeature_Spatial < 7000 & percent.mt < 20)
+hfd_pbs  <- subset(hfd_pbs, subset = nFeature_Spatial > 200 & nFeature_Spatial < 7000 & percent.mt < 20)
+hfd_tzp  <- subset(hfd_tzp, subset = nFeature_Spatial > 200 & nFeature_Spatial < 7000 & percent.mt < 20)
+
+sapply(list(cd_pbs=cd_pbs,hfd_pbs=hfd_pbs,hfd_tzp=hfd_tzp), ncol)
+```
+
+# 4. SCTransform (per condition)
+
+```{r sct, cache=TRUE}
+library(glmGamPoi)
+options(future.globals.maxSize = 2 * 1024^3)
+plan("sequential")  # safer for Windows
+
+cd_pbs  <- SCTransform(cd_pbs,  assay = "Spatial", return.only.var.genes = FALSE, verbose = TRUE)
+hfd_pbs <- SCTransform(hfd_pbs, assay = "Spatial", return.only.var.genes = FALSE, verbose = TRUE)
+hfd_tzp <- SCTransform(hfd_tzp, assay = "Spatial", return.only.var.genes = FALSE, verbose = TRUE)
+```
+
+# 5. Integrate datasets
+
+```{r integrate}
+# Shared features to avoid subscript issues
+common.features <- Reduce(intersect, list(rownames(cd_pbs), rownames(hfd_pbs), rownames(hfd_tzp)))
+cd_pbs  <- subset(cd_pbs,  features = common.features)
+hfd_pbs <- subset(hfd_pbs, features = common.features)
+hfd_tzp <- subset(hfd_tzp, features = common.features)
+
+gut.features <- SelectIntegrationFeatures(object.list = list(cd_pbs, hfd_pbs, hfd_tzp), nfeatures = 3000)
+gut.list     <- PrepSCTIntegration(object.list = list(cd_pbs, hfd_pbs, hfd_tzp), anchor.features = gut.features)
+anchors      <- FindIntegrationAnchors(object.list = gut.list, normalization.method = "SCT", anchor.features = gut.features)
+gut.integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT")
+
+gut.integrated <- RunPCA(gut.integrated, verbose = FALSE)
+gut.integrated <- RunUMAP(gut.integrated, dims = 1:20, verbose = FALSE)
+gut.integrated <- FindNeighbors(gut.integrated, dims = 1:20)
+gut.integrated <- FindClusters(gut.integrated, resolution = 0.5)
+
+DimPlot(gut.integrated, group.by = "condition", pt.size = 0.5)
+ggsave(file.path(plots_dir, "UMAP_condition.png"), width = 7, height = 5, dpi = 300)
+DimPlot(gut.integrated, label=TRUE, repel=TRUE, pt.size = 0.5)
+ggsave(file.path(plots_dir, "UMAP_clusters.png"), width = 7, height = 5, dpi = 300)
+
+saveRDS(gut.integrated, file.path(results_dir, "gut_integrated.rds"))
+```
+
+# 6. Marker-guided annotation
+
+```{r annotate}
+epi_markers <- c("Vil1","Alpi","Apoa1","Apoa4")
+smc_markers <- c("Acta2")
+
+DefaultAssay(gut.integrated) <- "SCT"
+gut.integrated$cell_type <- "Other"
+epi_score <- Matrix::colSums(GetAssayData(gut.integrated, slot="data")[epi_markers, , drop=FALSE])
+smc_score <- Matrix::colSums(GetAssayData(gut.integrated, slot="data")[smc_markers, , drop=FALSE])
+
+gut.integrated$cell_type[epi_score > quantile(epi_score, 0.7)] <- "Epithelial"
+gut.integrated$cell_type[smc_score > quantile(smc_score, 0.7)] <- "SMC"
+
+table(gut.integrated$cell_type)
+saveRDS(gut.integrated, file.path(results_dir, "gut_integrated_labeled.rds"))
+```
+
+## 6.1 Marker visualization
+
+```{r marker-plots}
+FeaturePlot(gut.integrated, features = c("Vil1","Alpi","Apoa1","Apoa4"), combine = TRUE)
+ggsave(file.path(plots_dir, "Epithelial_markers.png"), width = 9, height = 7, dpi = 300)
+FeaturePlot(gut.integrated, features = c("Acta2"))
+ggsave(file.path(plots_dir, "SMC_marker_Acta2.png"), width = 7, height = 5, dpi = 300)
+```
+
+# 7. Split objects
+
+```{r split}
+epi <- subset(gut.integrated, subset = cell_type == "Epithelial")
+smc <- subset(gut.integrated, subset = cell_type == "SMC")
+table(epi$condition); table(smc$condition)
+```
+
+# 8. DEG analysis (Wilcoxon)
+
+```{r deg-epi}
+deg_HFDvsCD  <- FindMarkers(epi, ident.1 = "HFD_PBS", ident.2 = "CD_PBS",  logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox")
+deg_TZPvsHFD <- FindMarkers(epi, ident.1 = "HFD_TZP", ident.2 = "HFD_PBS", logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox")
+
+write.csv(deg_HFDvsCD,  file.path(results_dir, "DEG_Epithelial_HFDvsCD.csv"))
+write.csv(deg_TZPvsHFD, file.path(results_dir, "DEG_Epithelial_TZPvsHFD.csv"))
+
+deg_summary <- data.frame(
+  Comparison = c("HFD_PBS vs CD_PBS", "HFD_TZP vs HFD_PBS"),
+  Upregulated = c(sum(deg_HFDvsCD$avg_log2FC  > 0 & deg_HFDvsCD$p_val_adj  < 0.05),
+                  sum(deg_TZPvsHFD$avg_log2FC > 0 & deg_TZPvsHFD$p_val_adj < 0.05)),
+  Downregulated = c(sum(deg_HFDvsCD$avg_log2FC  < 0 & deg_HFDvsCD$p_val_adj  < 0.05),
+                    sum(deg_TZPvsHFD$avg_log2FC < 0 & deg_TZPvsHFD$p_val_adj < 0.05))
+)
+write.csv(deg_summary, file.path(results_dir, "DEG_Summary_Epithelial.csv"), row.names = FALSE)
+deg_summary
+```
+
+```{r deg-smc}
+deg_HFDvsCD_SMC  <- FindMarkers(smc, ident.1 = "HFD_PBS", ident.2 = "CD_PBS",  logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox")
+deg_TZPvsHFD_SMC <- FindMarkers(smc, ident.1 = "HFD_TZP", ident.2 = "HFD_PBS", logfc.threshold = 0.25, min.pct = 0.1, test.use = "wilcox")
+
+write.csv(deg_HFDvsCD_SMC,  file.path(results_dir, "DEG_SMC_HFDvsCD.csv"))
+write.csv(deg_TZPvsHFD_SMC, file.path(results_dir, "DEG_SMC_TZPvsHFD.csv"))
+
+deg_summary_SMC <- data.frame(
+  Comparison = c("HFD_PBS vs CD_PBS", "HFD_TZP vs HFD_PBS"),
+  Upregulated = c(sum(deg_HFDvsCD_SMC$avg_log2FC  > 0 & deg_HFDvsCD_SMC$p_val_adj  < 0.05),
+                  sum(deg_TZPvsHFD_SMC$avg_log2FC > 0 & deg_TZPvsHFD_SMC$p_val_adj < 0.05)),
+  Downregulated = c(sum(deg_HFDvsCD_SMC$avg_log2FC  < 0 & deg_HFDvsCD_SMC$p_val_adj  < 0.05),
+                    sum(deg_TZPvsHFD_SMC$avg_log2FC < 0 & deg_TZPvsHFD_SMC$p_val_adj < 0.05))
+)
+write.csv(deg_summary_SMC, file.path(results_dir, "DEG_Summary_SMC.csv"), row.names = FALSE)
+deg_summary_SMC
+```
+
+# 9. Save significant gene lists
+
+```{r sig-lists}
+epi_HFDvsCD_sig  <- rownames(deg_HFDvsCD)[deg_HFDvsCD$p_val_adj  < 0.05]
+epi_TZPvsHFD_sig <- rownames(deg_TZPvsHFD)[deg_TZPvsHFD$p_val_adj < 0.05]
+smc_HFDvsCD_sig  <- rownames(deg_HFDvsCD_SMC)[deg_HFDvsCD_SMC$p_val_adj  < 0.05]
+smc_TZPvsHFD_sig <- rownames(deg_TZPvsHFD_SMC)[deg_TZPvsHFD_SMC$p_val_adj < 0.05]
+
+writeLines(epi_HFDvsCD_sig,  file.path(results_dir, "Genes_Epithelial_HFDvsCD_sig.txt"))
+writeLines(epi_TZPvsHFD_sig, file.path(results_dir, "Genes_Epithelial_TZPvsHFD_sig.txt"))
+writeLines(smc_HFDvsCD_sig,  file.path(results_dir, "Genes_SMC_HFDvsCD_sig.txt"))
+writeLines(smc_TZPvsHFD_sig, file.path(results_dir, "Genes_SMC_TZPvsHFD_sig.txt"))
+```
+
+# 10. GO enrichment (TZP vs HFD)
+
+```{r go-epi}
+epi_entrez <- bitr(rownames(deg_TZPvsHFD)[deg_TZPvsHFD$p_val_adj < 0.05], fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Rn.eg.db)
+go_epi <- enrichGO(gene = epi_entrez$ENTREZID, OrgDb = org.Rn.eg.db, keyType = "ENTREZID",
+                   ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05, readable = TRUE)
+go_epi_res <- as.data.frame(go_epi)[1:20, ]
+write.csv(go_epi_res, file.path(results_dir, "GO_Epithelial_TZPvsHFD_sig.csv"), row.names = FALSE)
+p_go_epi <- barplot(go_epi, showCategory = 20, title = "GO BP: Epithelial TZP vs HFD")
+ggsave(file.path(plots_dir, "GO_Epithelial_TZPvsHFD_sig.png"), p_go_epi, width = 10, height = 8, dpi = 300)
+```
+
+```{r go-smc}
+smc_entrez <- bitr(rownames(deg_TZPvsHFD_SMC)[deg_TZPvsHFD_SMC$p_val_adj < 0.05], fromType="SYMBOL", toType="ENTREZID", OrgDb=org.Rn.eg.db)
+go_smc <- enrichGO(gene = smc_entrez$ENTREZID, OrgDb = org.Rn.eg.db, keyType = "ENTREZID",
+                   ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05, readable = TRUE)
+go_smc_res <- as.data.frame(go_smc)[1:20, ]
+write.csv(go_smc_res, file.path(results_dir, "GO_SMC_TZPvsHFD_sig.csv"), row.names = FALSE)
+p_go_smc <- barplot(go_smc, showCategory = 20, title = "GO BP: SMC TZP vs HFD")
+ggsave(file.path(plots_dir, "GO_SMC_TZPvsHFD_sig.png"), p_go_smc, width = 10, height = 8, dpi = 300)
+```
+
+# 11. Comparison figure
+
+```{r compare}
+combine_top <- function(df, label) {
+  df <- head(df, 10)
+  df$CellType <- label
+  df
+}
+ep <- combine_top(read.csv(file.path(results_dir, "GO_Epithelial_TZPvsHFD_sig.csv")), "Epithelial")
+sm <- combine_top(read.csv(file.path(results_dir, "GO_SMC_TZPvsHFD_sig.csv")),       "SMC")
+cmp <- rbind(ep, sm)
+
+cmp$Description <- ifelse(nchar(cmp$Description) > 45, paste0(substr(cmp$Description, 1, 42), "..."), cmp$Description)
+
+p_cmp <- ggplot(cmp, aes(x = reorder(Description, -log10(p.adjust)), y = -log10(p.adjust), fill = CellType)) +
+  geom_col(position = "dodge") + coord_flip() +
+  labs(title = "Comparison of GO Enrichment: Epithelial vs SMC (TZP vs HFD)",
+       x = "GO Biological Process", y = "-log10(adj. p)") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.y = element_text(size = 9, face = "bold"), plot.title = element_text(hjust = 0.5))
+
+ggsave(file.path(plots_dir, "GO_Comparison_Epithelial_vs_SMC_TZPvsHFD.png"), p_cmp, width = 11, height = 8, dpi = 300)
+p_cmp
+```
+
+# 12. Session info
+
+```{r session}
+sessionInfo()
+```
