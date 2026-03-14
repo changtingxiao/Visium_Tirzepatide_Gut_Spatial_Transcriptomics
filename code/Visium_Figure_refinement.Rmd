@@ -1,0 +1,122 @@
+---
+author: Tao Sun
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    number_sections: true
+    toc: true
+    toc_depth: 3
+title: Visium Spatial Transcriptomics -- Figure Refinement and
+  Supplementary Analysis
+---
+
+# Project Scope
+
+This document summarizes the second phase of the Visium spatial
+transcriptomics analysis focused on figure refinement, manuscript
+consistency, and preparation of publication‑quality visualizations. No
+additional statistical models were introduced; the work focused on
+improving clarity, reproducibility, and presentation quality.
+
+# Objectives
+
+The main objectives were:
+
+-   Standardize treatment labels (CD/PBS, HFD/PBS, HFD/TZP)
+-   Regenerate publication‑quality figures
+-   Improve GO enrichment visualization
+-   Generate DEG visualization figures (volcano and heatmaps)
+-   Prepare supplementary figures supporting manuscript conclusions
+
+# Data Source
+
+The analysis used the processed Seurat object:
+
+results/gut_integrated_labeled.rds
+
+Spatial transcriptomics data were generated using the 10x Genomics
+Visium platform.
+
+# Figure Refinement
+
+## UMAP Visualization
+
+UMAP plots were regenerated with:
+
+-   Standardized condition labels
+-   Publication quality resolution
+-   Clear axis labels (UMAP_1 and UMAP_2)
+-   Consistent color palette
+
+## GO Enrichment
+
+GO biological process enrichment plots were regenerated for:
+
+-   Epithelial cells (HFD/TZP vs HFD/PBS)
+-   Smooth muscle cells (HFD/TZP vs HFD/PBS)
+
+Improvements included:
+
+-   Shortened GO term labels
+-   Removal of unnecessary grid lines
+-   Improved axis readability
+-   Publication‑ready formatting
+
+## GO Comparison Plot
+
+A combined GO enrichment comparison plot was generated to compare
+epithelial and SMC responses. This figure highlights pathway differences
+between structural and epithelial compartments.
+
+# DEG Visualization
+
+## Volcano plots
+
+Volcano plots were generated for:
+
+-   Epithelial cells
+-   SMC cells
+
+Features:
+
+-   Upregulated genes (red)
+-   Downregulated genes (blue)
+-   Non‑significant genes (grey)
+-   Top genes labeled
+
+## Heatmaps
+
+Heatmaps were generated using top DEGs to visualize transcriptional
+differences between treatment conditions.
+
+Observation:
+
+Epithelial heatmaps contain more spots because epithelial cells are more
+abundant spatially, while SMC spots are fewer due to their anatomical
+distribution.
+
+# Pseudobulk Expression Visualization
+
+Pseudobulk‑style bar plots were generated showing mean expression by
+condition for selected genes. These plots support DEG findings and
+provide intuitive biological interpretation.
+
+# Reproducibility Notes
+
+All figures can be regenerated using:
+
+Visium_TZP_pipeline.Rmd
+
+Key packages:
+
+-   Seurat
+-   clusterProfiler
+-   enrichplot
+-   ggplot2
+-   dplyr
+
+# Conclusion
+
+All requested figure refinements and supplementary analyses have been
+completed. Figures are ready for integration into the manuscript and
+supplementary materials.
