@@ -1,0 +1,8 @@
+Cell-type markers
+Enterocytes: Apoa1, Apoa4, Alpi, Vil1
+Fibroblasts: Acta2
+Endothelial cells: Cd31 (for blood and lymphatic vessels), Pdpn (for lymphatic vessel)
+Enteroendocrine cells: Chga, Cldn4
+Neurons: Rbfox3 (NeuN), Tubb3 (Tuj1), Uchl1 (PGP9.5)
+Goblet cells: Muc2, Ido1, Clca1
+Tuft cells: Dclk1, Tuft2, Pou2f3
